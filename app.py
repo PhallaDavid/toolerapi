@@ -8,7 +8,6 @@ import io
 import os
 import uuid
 import asyncio
-from docx2pdf import convert
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Khmer OCR API")
@@ -27,8 +26,9 @@ os.makedirs("outputs", exist_ok=True)
 # Mount the outputs directory to serve static files
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
-# Update this path if Tesseract is installed elsewhere
-tess.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# Update this path if Tesseract is installed elsewhere (only needed on Windows)
+if os.name == 'nt':
+    tess.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 @app.post("/ocr")
 async def perform_ocr(file: UploadFile = File(...)):
@@ -116,8 +116,22 @@ async def convert_word_to_pdf(request: Request, file: UploadFile = File(...)):
         with open(input_filepath, "wb") as f:
             f.write(contents)
             
-        # Convert Word to PDF (runs in a separate thread to avoid blocking the API)
-        await asyncio.to_thread(convert, input_filepath, output_filepath)
+        # Convert Word to PDF (OS dependent)
+        if os.name == 'nt':
+            # Windows: use docx2pdf
+            from docx2pdf import convert
+            await asyncio.to_thread(convert, input_filepath, output_filepath)
+        else:
+            # Linux (Render): use LibreOffice
+            process = await asyncio.create_subprocess_exec(
+                "libreoffice", "--headless", "--nologo", "--nofirststartwizard", 
+                "--convert-to", "pdf", "--outdir", "outputs", input_filepath,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise Exception(f"LibreOffice conversion failed: {stderr.decode()}")
         
         # Generate the full URL to access the PDF
         file_url = str(request.base_url) + f"outputs/{output_filename}"
